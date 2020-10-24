@@ -19,7 +19,9 @@ First clone the directory. Then run the following command to initialize the subm
 
    git submodule init; git submodule update
 
-The repository also has the following dependencies:
+(If showing error of no permission, need to first `add a new SSH key to your GitHub account <https://docs.github.com/en/free-pro-team@latest/github/authenticating-to-github/adding-a-new-ssh-key-to-your-github-account>`_.)
+
+The repository also has the following dependencies, and please refer to the respective page to install:
 
 - `PyTorch <https://pytorch.org/>`_ >= 1.4.0
 
@@ -104,8 +106,9 @@ Alternatively, to run a single attack experiment, use "run_exp/run_nettack.py". 
 
    python run_exp/run_nettack.py --exp_id=Citeseer-GIB-Bern --data_type=citeseer-bool --model_type=GAT --beta1=0.001 --beta2=0.01 --struct_dropout_mode='\("DNsampling","Bernoulli",0.05,0.5,"norm",2\)' --seed=0 --gpuid=0
 
-Other baselines
-**********************
+Other baselines:
+########
+
 **Cora with GAT**:
 
 .. code:: bash
@@ -181,8 +184,8 @@ Other baselines
    python run_exp/run_nettack.py --exp_id=Citeseer-RGCN --data_type=citeseer-bool --model_type=RGCN --beta1=5e-4 --beta2=-1 --latent_size=64 --lr=1e-2 --weight_decay=5e-4 --gamma=0.3 --seed=0 --gpuid=0
 
 
-Ablation study
-**********************
+Ablation study:
+########
 
 **Cora with XIB**:
 
