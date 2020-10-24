@@ -1,0 +1,6 @@
+[submodule "DeepRobust"]
+	path = DeepRobust
+	url = git@github.com:tailintalent/DeepRobust.git
+[submodule "pytorch_net"]
+	path = pytorch_net
+	url = git@github.com:tailintalent/pytorch_net.git
