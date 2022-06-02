@@ -16,7 +16,9 @@ from scipy.sparse.csgraph import connected_components
 import sklearn
 from sklearn.manifold import TSNE
 import torch
-from torch.nn import Parameter, Linear
+from torch.nn import Parameter
+from torch_geometric.nn.dense.linear import Linear
+
 import torch.nn.functional as F
 from torch.distributions.normal import Normal
 
@@ -279,6 +281,10 @@ class GATConv(MessagePassing):
                                              heads * self.out_neurons))
         self.att = Parameter(torch.Tensor(1, heads, 2 * self.out_neurons))
 
+        self.lin_src = Linear(in_channels, heads * self.out_neurons,
+                                  bias=False, weight_initializer='glorot')
+        self.lin_dst = self.lin_src
+        
         if bias and concat:
             self.bias = Parameter(torch.Tensor(heads * self.out_neurons))
         elif bias and not concat:
@@ -302,17 +308,22 @@ class GATConv(MessagePassing):
     def forward(self, x, edge_index, size=None):
         """"""
         if size is None and torch.is_tensor(x) and not self.skip_editing_edge_index:
-            edge_index, _ = remove_self_loops(edge_index)
-            edge_index, _ = add_self_loops(edge_index,
+            edge_index, edge_attr = remove_self_loops(edge_index)
+            edge_index, edge_attr = add_self_loops(edge_index, edge_attr,
                                            num_nodes=x.size(self.node_dim))
-
+        H, C = self.heads, self.out_channels
+        x_src = x_dst = self.lin_src(x).view(-1, H, C)
+        
         if torch.is_tensor(x):
             x = torch.matmul(x, self.weight)
         else:
             x = (None if x[0] is None else torch.matmul(x[0], self.weight),
                  None if x[1] is None else torch.matmul(x[1], self.weight))
-
-        out = self.propagate(edge_index, size=size, x=x)
+        
+        
+        print(edge_index.shape, x.shape, size)       
+        x = (x_src, x_dst)
+        out = self.propagate(edge_index, x=x, size=size)
 
         if self.reparam_mode is not None:
             # Reparameterize:
@@ -612,7 +623,6 @@ class GNN(torch.nn.Module):
             self.non_reg_params = OrderedDict()
         self.to(self.device)
 
-
     def set_cache(self, cached):
         """Set cache for GCN."""
         for i in range(self.num_layers):
@@ -673,7 +683,9 @@ class GNN(torch.nn.Module):
             for i in range(self.num_layers - 1):
                 if self.struct_dropout_mode[0] == 'DNsampling' or (self.struct_dropout_mode[0] == 'standard' and len(self.struct_dropout_mode) == 3):
                     x_1, ixz_1, structure_kl_loss_1 = getattr(self, "conv{}_1".format(i + 1))(x, data.multi_edge_index)
+                    
                 layer = getattr(self, "conv{}".format(i + 1))
+                print(layer, "conv{}".format(i + 1))
                 x, ixz, structure_kl_loss = layer(x, data.edge_index)
                 # Record:
                 record_data(reg_info, [ixz, structure_kl_loss], ["ixz_list", "structure_kl_list"])
