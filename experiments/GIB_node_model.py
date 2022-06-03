@@ -17,7 +17,11 @@ import sklearn
 from sklearn.manifold import TSNE
 import torch
 from torch.nn import Parameter
-from torch_geometric.nn.dense.linear import Linear
+
+try:
+    from torch_geometric.nn.dense.linear import Linear
+except ModuleNotFoundError:
+    from torch.nn import Linear
 
 import torch.nn.functional as F
 from torch.distributions.normal import Normal
@@ -281,9 +285,9 @@ class GATConv(MessagePassing):
                                              heads * self.out_neurons))
         self.att = Parameter(torch.Tensor(1, heads, 2 * self.out_neurons))
 
-        self.lin_src = Linear(in_channels, heads * self.out_neurons,
-                                  bias=False, weight_initializer='glorot')
-        self.lin_dst = self.lin_src
+        # self.lin_src = Linear(in_channels, heads * self.out_neurons,
+        #                           bias=False, weight_initializer='glorot')
+        # self.lin_dst = self.lin_src
         
         if bias and concat:
             self.bias = Parameter(torch.Tensor(heads * self.out_neurons))
@@ -744,7 +748,7 @@ class GNN(torch.nn.Module):
                     x_1, ixz_1, structure_kl_loss_1 = getattr(self, "conv{}_1".format(i + 1))(x, data.multi_edge_index)
                     
                 layer = getattr(self, "conv{}".format(i + 1))
-                print(layer, "conv{}".format(i + 1))
+                # print(layer, "conv{}".format(i + 1))
                 x, ixz, structure_kl_loss = layer(x, data.edge_index)
                 # Record:
                 record_data(reg_info, [ixz, structure_kl_loss], ["ixz_list", "structure_kl_list"])
