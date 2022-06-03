@@ -521,6 +521,8 @@ else:
         accs_clean[key + "_clean"] = all_dict[node_ids[0]][key + "_clean"]
 
 # Iterations:
+# subsample number of attacks
+node_ids = np.random.choice(node_ids, int(len(node_ids) * 0.3), replace=False)
 for i, node_id in enumerate(node_ids):
     node_id = int(node_id)
     if is_load and node_id in all_dict:
