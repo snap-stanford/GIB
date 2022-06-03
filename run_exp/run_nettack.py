@@ -37,7 +37,8 @@ shared_args = {
     "val_use_mean": True,
 }
 
-for n_pert in [1, 2, 3, 4]:
+# reduce perturbations
+for n_pert in [2, 4]:
     exec_str = "python {}/experiments/GIB_node_attack_exp.py --n_perturbations={}".format(get_root_dir(), n_pert)
     for param_name, param in args.__dict__.items():
         exec_str += " --{}={}".format(param_name, param)
