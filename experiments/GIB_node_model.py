@@ -304,26 +304,20 @@ class GATConv(MessagePassing):
         glorot(self.weight)
         glorot(self.att)
         zeros(self.bias)
-
     def forward(self, x, edge_index, size=None):
         """"""
         if size is None and torch.is_tensor(x) and not self.skip_editing_edge_index:
-            edge_index, edge_attr = remove_self_loops(edge_index)
-            edge_index, edge_attr = add_self_loops(edge_index, edge_attr,
+            edge_index, _ = remove_self_loops(edge_index)
+            edge_index, _ = add_self_loops(edge_index,
                                            num_nodes=x.size(self.node_dim))
-        H, C = self.heads, self.out_channels
-        x_src = x_dst = self.lin_src(x).view(-1, H, C)
-        
+
         if torch.is_tensor(x):
             x = torch.matmul(x, self.weight)
         else:
             x = (None if x[0] is None else torch.matmul(x[0], self.weight),
                  None if x[1] is None else torch.matmul(x[1], self.weight))
-        
-        
-        print(edge_index.shape, x.shape, size)       
-        x = (x_src, x_dst)
-        out = self.propagate(edge_index, x=x, size=size)
+
+        out = self.propagate(edge_index, size=size, x=x)
 
         if self.reparam_mode is not None:
             # Reparameterize:
@@ -369,6 +363,71 @@ class GATConv(MessagePassing):
             structure_kl_loss = torch.zeros([]).to(x.device)
 
         return out, ixz, structure_kl_loss
+
+    # def forward(self, x, edge_index, size=None):
+    #     """"""
+    #     if size is None and torch.is_tensor(x) and not self.skip_editing_edge_index:
+    #         edge_index, edge_attr = remove_self_loops(edge_index)
+    #         edge_index, edge_attr = add_self_loops(edge_index, edge_attr,
+    #                                        num_nodes=x.size(self.node_dim))
+    #     H, C = self.heads, self.out_channels
+    #     x_src = x_dst = self.lin_src(x).view(-1, H, C)
+        
+    #     if torch.is_tensor(x):
+    #         x = torch.matmul(x, self.weight)
+    #     else:
+    #         x = (None if x[0] is None else torch.matmul(x[0], self.weight),
+    #              None if x[1] is None else torch.matmul(x[1], self.weight))
+        
+        
+    #     print(edge_index.shape, x.shape, size)       
+    #     x = (x_src, x_dst)
+    #     out = self.propagate(edge_index, x=x, size=size)
+
+    #     if self.reparam_mode is not None:
+    #         # Reparameterize:
+    #         out = out.view(-1, self.out_neurons)
+    #         self.dist, _ = reparameterize(model=None, input=out,
+    #                                       mode=self.reparam_mode,
+    #                                       size=self.out_channels,
+    #                                      )  # dist: [B * head, Z]
+    #         Z_core = sample(self.dist, self.sample_size)  # [S, B * head, Z]
+    #         Z = Z_core.view(self.sample_size, -1, self.heads * self.out_channels)  # [S, B, head * Z]
+
+    #         if self.prior_mode == "Gaussian":
+    #             self.feature_prior = Normal(loc=torch.zeros(out.size(0), self.out_channels).to(x.device),
+    #                                         scale=torch.ones(out.size(0), self.out_channels).to(x.device),
+    #                                        )  # feature_prior: [B * head, Z]
+
+    #         if self.reparam_mode == "diag" and self.prior_mode == "Gaussian":
+    #             ixz = torch.distributions.kl.kl_divergence(self.dist, self.feature_prior).sum(-1).view(-1, self.heads).mean(-1)
+    #         else:
+    #             Z_logit = self.dist.log_prob(Z_core).sum(-1) if self.reparam_mode.startswith("diag") else self.dist.log_prob(Z_core)  # [S, B * head]
+    #             prior_logit = self.feature_prior.log_prob(Z_core).sum(-1)  # [S, B * head]
+    #             # upper bound of I(X; Z):
+    #             ixz = (Z_logit - prior_logit).mean(0).view(-1, self.heads).mean(-1)  # [B]
+
+    #         self.Z_std = to_np_array(Z.std((0, 1)).mean())
+    #         if self.val_use_mean is False or self.training:
+    #             out = Z.mean(0)
+    #         else:
+    #             out = out[:, :self.out_channels].contiguous().view(-1, self.heads * self.out_channels)
+    #     else:
+    #         ixz = torch.zeros(x.size(0)).to(x.device)
+
+    #     if "Nsampling" in self.struct_dropout_mode[0]:
+    #         if 'categorical' in self.struct_dropout_mode[1]:
+    #             structure_kl_loss = torch.sum(self.alpha*torch.log((self.alpha+1e-16)/self.prior))
+    #         elif 'Bernoulli' in self.struct_dropout_mode[1]:
+    #             posterior = torch.distributions.bernoulli.Bernoulli(self.alpha)
+    #             prior = torch.distributions.bernoulli.Bernoulli(self.prior) 
+    #             structure_kl_loss = torch.distributions.kl.kl_divergence(posterior, prior).sum(-1).mean()
+    #         else:
+    #             raise Exception("I think this belongs to the diff subset sampling that is not implemented")
+    #     else:
+    #         structure_kl_loss = torch.zeros([]).to(x.device)
+
+    #     return out, ixz, structure_kl_loss
 
     def message(self, edge_index_i, x_i, x_j, size_i):
         # Compute attention coefficients.
