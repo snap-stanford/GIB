@@ -308,6 +308,7 @@ class GATConv(MessagePassing):
         glorot(self.weight)
         glorot(self.att)
         zeros(self.bias)
+    
     def forward(self, x, edge_index, size=None):
         """"""
         if size is None and torch.is_tensor(x) and not self.skip_editing_edge_index:
