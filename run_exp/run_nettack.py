@@ -21,6 +21,7 @@ parser.add_argument('--gamma', type=float, default=0.3, help='gamma for RGCN')
 parser.add_argument('--seed', type=int, help='seed', required=True)
 parser.add_argument('--gpuid', type=str, default=torch.cuda.is_available(), help='Use integer 0, 1, 2, ... to denote which cuda device to use. If using CPU, pass in "False"')
 parser.add_argument('--date_time', default="{0}-{1}".format(datetime.datetime.now().month, datetime.datetime.now().day), help="Today's date and time.")
+parser.add_argument('--percent_nodes',  type=float, default="0.3", help='Percent of originally attacked nodes.')
 args = parser.parse_args()
 
 # For explanation of the args, see experiments/GIB_node_attack_exp.py.

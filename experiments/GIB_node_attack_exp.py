@@ -293,7 +293,7 @@ idx = "0"                   # idx to differentiate different files. Only used if
 
 # Other settings:
 retrain_iters = 1           # How many models to train for each setting and given attacked nodes.
-is_load = True              # Whether to load previous checkpoint.
+is_load = False              # Whether to load previous checkpoint.
 threshold = 0.05            # Threshold for GCNJaccard.
 gamma = 0.5                 # gamma for RGCN
 
@@ -335,7 +335,7 @@ except:
     parser.add_argument('--gamma', type=float, default=0.3, help='gamma for RGCN')
     parser.add_argument('--retrain_iters', type=int, default=1, help='retrain_iters')
     parser.add_argument('--is_load', type=str2bool, nargs='?', const=True, default=True, help='Whether to load previous trained instance.')
-    
+    parser.add_argument('--percent_nodes',  type=float, default="0.3", help='Percent of originally attacked nodes.')
     args = parser.parse_args()
 
 
@@ -367,6 +367,7 @@ if "args" in locals():
     gamma = args.gamma
     retrain_iters = args.retrain_iters
     is_load = args.is_load
+    percent_nodes = args.percent_nodes
     is_cuda = eval(args.gpuid)
     if not isinstance(is_cuda, bool):
         is_cuda = "cuda:{}".format(is_cuda)
@@ -377,16 +378,16 @@ device = torch.device(is_cuda if isinstance(is_cuda, str) else "cuda" if is_cuda
 
 dirname = GIB_PATH + "/{0}_{1}/".format(exp_id, date_time)
 if baseline: ########## difference is that for baselines we have an additional parameters
-    filename = dirname + "{0}_{1}_dire_{2}_nodes_{3}_pert_{4}_lat_{5}_samp_{6}_l_{7}_anl_{8}_mean_{9}_reall_{10}_epochs_{11}_lr_{12}_l2_{13}_seed_{14}_threshold_{15}_gamma_{16}_{17}_id_{18}".format(
+    filename = dirname + "{0}_{1}_dire_{2}_nodes_{3}_pert_{4}_lat_{5}_samp_{6}_l_{7}_anl_{8}_mean_{9}_reall_{10}_epochs_{11}_lr_{12}_l2_{13}_seed_{14}_threshold_{15}_gamma_{16}_{17}_id_{18}_p-nodes{19}".format(
         data_type, model_type, direct_attack, attacked_nodes, n_perturbations,
         latent_size, sample_size, num_layers, 
-        is_anneal_beta, val_use_mean, reparam_all_layers, epochs, lr, weight_decay, seed, threshold, gamma, is_cuda, idx,
+        is_anneal_beta, val_use_mean, reparam_all_layers, epochs, lr, weight_decay, seed, threshold, gamma, is_cuda, idx, percent_nodes
     )
 else:
-    filename = dirname + "{0}_{1}_dire_{2}_nodes_{3}_pert_{4}_beta_{5}_{6}_lat_{7}_samp_{8}_l_{9}_reparam_{10}_prior_{11}_sdrop_{12}_anl_{13}_mean_{14}_reall_{15}_epochs_{16}_lr_{17}_l2_{18}_seed_{19}_{20}_id_{21}".format(
+    filename = dirname + "{0}_{1}_dire_{2}_nodes_{3}_pert_{4}_beta_{5}_{6}_lat_{7}_samp_{8}_l_{9}_reparam_{10}_prior_{11}_sdrop_{12}_anl_{13}_mean_{14}_reall_{15}_epochs_{16}_lr_{17}_l2_{18}_seed_{19}_{20}_id_{21}_p-nodes{22}".format(
         data_type, model_type, direct_attack, attacked_nodes, n_perturbations, beta1, beta2,
         latent_size, sample_size, num_layers, reparam_mode, prior_mode, to_string(struct_dropout_mode, "-"), 
-        is_anneal_beta, val_use_mean, reparam_all_layers, epochs, lr, weight_decay, seed, is_cuda, idx,
+        is_anneal_beta, val_use_mean, reparam_all_layers, epochs, lr, weight_decay, seed, is_cuda, idx, percent_nodes
     )
 make_dir(filename)
 print(filename)
@@ -468,45 +469,45 @@ else:
 # In[ ]:
 
 
-# Load previous instance:
-if is_load:
-    try:
-        filename_core = "_".join(filename.split("/")[-1].split("_")[:-3])
-        cand_filename = filter_filename(dirname, include=filename_core)
-        if len(cand_filename) == 0:
-            raise Exception("Did not find previous file. Create new.")
-        assert cand_filename[0].endswith(".p")
-        filename = dirname + cand_filename[0][:-2]
-        all_dict_cand = pickle.load(open(filename + ".p", "rb"))
-    except Exception as e:
-        print(e)
-        is_load = False
-    if is_load:
-        if attack_type == "nettack":
-            if not "params" in all_dict_cand:
-                is_load = False
-            else:
-                all_dict = all_dict_cand
-                surrogate_model.gc1.weight.data = torch.FloatTensor(all_dict["params"]["W1"]).to(device)
-                surrogate_model.gc2.weight.data = torch.FloatTensor(all_dict["params"]["W2"]).to(device)
-                print("Load previous trained instance at {}.".format(filename))
+# # Load previous instance:
+# if is_load:
+#     try:
+#         filename_core = "_".join(filename.split("/")[-1].split("_")[:-3])
+#         cand_filename = filter_filename(dirname, include=filename_core)
+#         if len(cand_filename) == 0:
+#             raise Exception("Did not find previous file. Create new.")
+#         assert cand_filename[0].endswith(".p")
+#         filename = dirname + cand_filename[0][:-2]
+#         all_dict_cand = pickle.load(open(filename + ".p", "rb"))
+#     except Exception as e:
+#         print(e)
+#         is_load = False
+#     if is_load:
+#         if attack_type == "nettack":
+#             if not "params" in all_dict_cand:
+#                 is_load = False
+#             else:
+#                 all_dict = all_dict_cand
+#                 surrogate_model.gc1.weight.data = torch.FloatTensor(all_dict["params"]["W1"]).to(device)
+#                 surrogate_model.gc2.weight.data = torch.FloatTensor(all_dict["params"]["W2"]).to(device)
+#                 print("Load previous trained instance at {}.".format(filename))
 
 is_train = True
-if is_load:
-    is_all_attacked = True
-    for node_id in node_ids:
-        if node_id not in all_dict:
-            is_all_attacked = False
-            break
-    if not is_all_attacked:
-        if "models_before" in all_dict and isinstance(all_dict["models_before"][0], tuple):
-            print("Load models_before.")
-            models_before = [(load_model_dict_GNN(model_dict_last, is_cuda=is_cuda), 
-                              load_model_dict_GNN(model_dict_best, is_cuda=is_cuda)) for model_dict_last, model_dict_best in all_dict["models_before"]]
-            is_train = False
-    else:
-        is_train = False
-        print("all node_ids are attacked. Skip training clean model.")
+# if is_load:
+#     is_all_attacked = True
+#     for node_id in node_ids:
+#         if node_id not in all_dict:
+#             is_all_attacked = False
+#             break
+#     if not is_all_attacked:
+#         if "models_before" in all_dict and isinstance(all_dict["models_before"][0], tuple):
+#             print("Load models_before.")
+#             models_before = [(load_model_dict_GNN(model_dict_last, is_cuda=is_cuda), 
+#                               load_model_dict_GNN(model_dict_best, is_cuda=is_cuda)) for model_dict_last, model_dict_best in all_dict["models_before"]]
+#             is_train = False
+#     else:
+#         is_train = False
+#         print("all node_ids are attacked. Skip training clean model.")
 
 if is_train:
     print("Training clean model:")
@@ -523,13 +524,14 @@ else:
 # Iterations:
 # subsample number of attacks -> this reduces number of attacked nodes ==> less re-training
 print(node_ids)
-node_ids = np.random.choice(node_ids, int(len(node_ids) * 0.3), replace=False)
+percent_attack_nodes = percent_nodes
+node_ids = np.random.choice(node_ids, int(len(node_ids) * percent_attack_nodes), replace=False)
 print(node_ids)
 for i, node_id in enumerate(node_ids):
     node_id = int(node_id)
-    if is_load and node_id in all_dict:
-        print("Skip node {}.".format(node_id))
-        continue
+    # if is_load and node_id in all_dict:
+    #     print("Skip node {}.".format(node_id))
+    #     continue
     print("\nAttacking the {}th node id={}:".format(i, node_id))
     if attack_type == "nettack":
         data_attacked, info_attack = get_attacked_data_deeprobust(
