@@ -153,10 +153,13 @@ class GIBGCN(nn.Module):
 
     def forward(self, data, save_latent=False):
         x, edge_index, edge_weight = data.x, data.edge_index, data.edge_attr
+        
+        # if self.use_relu? x = F.relu(x)
+        # if self.dropout: x = F.dropout(x, training=self.training)
 
         z, ixz, structure_kl_loss = self.conv1(x, edge_index, edge_weight)
         # save latent ==> torch.save(z)?
-        #use relu? x = F.relu(x)
+        
         reg_info = None
         
         out, ixz, structure_kl_loss = self.conv2(z, edge_index, edge_weight)
