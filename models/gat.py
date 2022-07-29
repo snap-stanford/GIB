@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 import torch_geometric.nn as gnn
@@ -38,7 +39,9 @@ class GATConv(gnn.conv.GATConv):
             val_use_mean (bool, optional): use latent space mean as layer';s output. Defaults to True.
             bias (bool, optional): _description_. Defaults to True.
         """
-        super(GATConv, self).__init__(aggr="add", **kwargs)
+        super(GATConv, self).__init__(
+            aggr="add", in_channels=in_channels, out_channels=out_channels, **kwargs
+        )
 
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -55,30 +58,30 @@ class GATConv(gnn.conv.GATConv):
 
         self.__alpha__ = None
 
-        self.lin = Linear(in_channels, heads * out_channels, bias=False)
+        # self.lin = Linear(in_channels, heads * out_channels, bias=False)
 
-        self.att_i = Parameter(torch.Tensor(1, heads, out_channels))
-        self.att_j = Parameter(torch.Tensor(1, heads, out_channels))
+        # self.att_i = Parameter(torch.Tensor(1, heads, out_channels))
+        # self.att_j = Parameter(torch.Tensor(1, heads, out_channels))
 
-        if bias and concat:
-            self.bias = Parameter(torch.Tensor(heads * out_channels))
-        elif bias and not concat:
-            self.bias = Parameter(torch.Tensor(out_channels))
-        else:
-            self.register_parameter("bias", None)
+        # if bias and concat:
+        #     self.bias = Parameter(torch.Tensor(heads * out_channels))
+        # elif bias and not concat:
+        #     self.bias = Parameter(torch.Tensor(out_channels))
+        # else:
+        #     self.register_parameter("bias", None)
 
-        self.reset_parameters()
+        # self.reset_parameters()
 
     def reparameterize(self, encoder_out, size=None):
         # mode = diag
         mean_logit = encoder_out
         if isinstance(mean_logit, tuple):
             mean_logit = mean_logit[0]
-        size = int(mean_logit.size(-1) / 2)
-        mean = mean_logit[:, :size]
-        std = F.softplus(mean_logit[:, size:], beta=1) + 1e-10
-        dist = Normal(mean, std)
 
+        size = math.ceil(mean_logit.size(-1) / 2)
+        mean = mean_logit[:, :size]
+        std = F.softplus(mean_logit[:, -size:], beta=1) + 1e-10
+        dist = Normal(mean, std)
         return dist, (mean, std)
 
     def forward(self, x, edge_index, size=None):
@@ -87,9 +90,7 @@ class GATConv(gnn.conv.GATConv):
         # Reparameterize:
         # out = out.view(-1, self.out_neurons)
         self.dist, _ = self.reparameterize(
-            model=None,
-            input=out,
-            mode=self.reparam_mode,
+            encoder_out=out,
             size=self.out_channels,
         )  # dist: [B * head, Z]
         Z_core = Z = self.dist.rsample((self.sample_size,))  # [S, B * head, Z]
