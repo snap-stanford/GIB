@@ -152,18 +152,31 @@ class GIBGCN(nn.Module):
         )
 
     def forward(self, data, save_latent=False):
+        out_dict = {
+            'latent_out': [],
+            'ixz_list' : [],
+            'structure_kl_list': []
+        }
+
         x, edge_index, edge_weight = data.x, data.edge_index, data.edge_attr
         
         # if self.use_relu? x = F.relu(x)
         # if self.dropout: x = F.dropout(x, training=self.training)
 
-        z, ixz, structure_kl_loss = self.conv1(x, edge_index, edge_weight)
+        X, ixz, structure_kl_loss = self.conv1(x, edge_index, edge_weight)
+        out_dict['latent_out'] = out_dict['latent_out'] + [x]
+        out_dict['ixz_list'] = out_dict['ixz_list'] + [ixz]
+        out_dict['structure_kl_list'] = out_dict['structure_kl_list'] + [structure_kl_loss]
         # save latent ==> torch.save(z)?
         
         reg_info = None
         
-        out, ixz, structure_kl_loss = self.conv2(z, edge_index, edge_weight)
-        return out, ixz, structure_kl_loss
+        x, ixz, structure_kl_loss = self.conv2(x, edge_index, edge_weight)
+        out_dict['latent_out'] = out_dict['latent_out'] + [x]
+        out_dict['ixz_list'] = out_dict['ixz_list'] + [ixz]
+        out_dict['structure_kl_list'] = out_dict['structure_kl_list'] + [structure_kl_loss]
+
+        return x, out_dict
 
     def __repr__(self):
         return '{}({}, {})'.format(self.__class__.__name__, self.in_channels,

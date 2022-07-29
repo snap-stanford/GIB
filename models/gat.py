@@ -70,6 +70,7 @@ class GATConv(nn.conv.GATConv):
 
     def forward(self, x, edge_index, size=None):
         out = super().forward(x, edge_index)
+
         # Reparameterize:
         # out = out.view(-1, self.out_neurons)
         self.dist, _ = self.reparameterize(model=None, input=out,
@@ -198,6 +199,12 @@ class GIBGAT(nn.Module):
         #     ))
 
     def forward(self, data):
+        out_dict = {
+            'latent_out': [],
+            'ixz_list' : [],
+            'structure_kl_list': []
+        }
+
         x = F.dropout(data.x, p=0.6, training=self.training)
 
 
@@ -207,7 +214,9 @@ class GIBGAT(nn.Module):
                 
             
         x, ixz, structure_kl_loss = self.conv1(x, data.edge_index)
-
+        out_dict['latent_out'] = out_dict['latent_out'] + [x]
+        out_dict['ixz_list'] = out_dict['ixz_list'] + [ixz]
+        out_dict['structure_kl_list'] = out_dict['structure_kl_list'] + [structure_kl_loss]
         # Multi-hop:
         # if self.struct_dropout_mode[0] == 'DNsampling' or (self.struct_dropout_mode[0] == 'standard' and len(self.struct_dropout_mode) == 3):
         #     x = torch.cat([x, x_1], dim=-1)
@@ -215,18 +224,17 @@ class GIBGAT(nn.Module):
         x = F.elu(x)
         x = F.dropout(x, p=0.6, training=self.training)
 
-        # LAST LAYER: 
-        #TODO
-
         # another sublayer?
         # if self.struct_dropout_mode[0] == 'DNsampling' or (self.struct_dropout_mode[0] == 'standard' and len(self.struct_dropout_mode) == 3):
         #     x_1, ixz_1, structure_kl_loss_1 = getattr(self, "conv{}_1".format(self.num_layers))(x, data.multi_edge_index)
 
         x, ixz, structure_kl_loss = self.conv2(x, data.edge_index)
-
+        out_dict['latent_out'] = out_dict['latent_out'] + [x]
+        out_dict['ixz_list'] = out_dict['ixz_list'] + [ixz]
+        out_dict['structure_kl_list'] = out_dict['structure_kl_list'] + [structure_kl_loss]
 
         # Multi-hop:
         # if self.struct_dropout_mode[0] == 'DNsampling' or (self.struct_dropout_mode[0] == 'standard' and len(self.struct_dropout_mode) == 3):
         #     x = x + x_1
 
-        return x, ixz, structure_kl_loss
+        return x, out_dict
