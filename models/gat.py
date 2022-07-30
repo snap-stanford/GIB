@@ -152,20 +152,17 @@ class GATConv(gnn.conv.GATConv):
         )  # [B, Z]
 
         # if self.reparametrize_mode == "diag" and self.prior_mode == "Gaussian":
-        # ixz = (
-        #     torch.distributions.kl.kl_divergence(dist, self.feature_prior)
-        #     .sum(-1)
-        #     .view(-1, self.heads)
-        #     .mean(-1)
-        # )
+        ixz = torch.distributions.kl.kl_divergence(dist, self.feature_prior).view(
+            x.shape[0], -1, self.heads
+        )
         # else:
-        Z_logit = (
-            dist.log_prob(Z_core).sum(-1)
-            # dist.log_prob(Z_core)
-        )  # [S, B * head]
-        prior_logit = self.feature_prior.log_prob(Z_core).sum(-1)  # [S, B * head]
-        # upper bound of I(X; Z):
-        ixz = (Z_logit - prior_logit).mean(0).view(-1, self.heads)
+        # Z_logit = (
+        #     dist.log_prob(Z_core).sum(-1)
+        #     # dist.log_prob(Z_core)
+        # )  # [S, B * head]
+        # prior_logit = self.feature_prior.log_prob(Z_core).sum(-1)  # [S, B * head]
+        # # upper bound of I(X; Z):
+        # ixz = (Z_logit - prior_logit).view(x.shape[0], -1, self.heads)
 
         self.Z_std = Z.std((0, 1))
         self.Z_std = self.Z_std.cpu().data.mean()
@@ -177,11 +174,13 @@ class GATConv(gnn.conv.GATConv):
         )
 
         if "Nsampling" in self.struct_dropout_mode[0]:
-            structure_kl_loss = torch.sum(
-                self._alpha * torch.log((self._alpha + 1e-16) / self.prior)
+            structure_kl_loss = self._alpha * torch.log(
+                (self._alpha + 1e-16) / self.prior
             )
+
         else:
-            structure_kl_loss = torch.zeros([]).to(x.device)
+            structure_kl_loss = torch.zeros(ixz.shape).to(x.device)
+        # print(out.shape, ixz.shape, structure_kl_loss.shape)
         return out, ixz, structure_kl_loss
 
     def message(self, x_j, alpha_j, alpha_i, edge_attr, index, ptr, size_i):
