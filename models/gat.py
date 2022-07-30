@@ -174,8 +174,8 @@ class GATConv(gnn.conv.GATConv):
         )
 
         if "Nsampling" in self.struct_dropout_mode[0]:
-            structure_kl_loss = self._alpha * torch.log(
-                (self._alpha + 1e-16) / self.prior
+            structure_kl_loss = self.alpha * torch.log(
+                (self.alpha + 1e-16) / self.prior
             )
 
         else:
@@ -200,6 +200,7 @@ class GATConv(gnn.conv.GATConv):
         alpha = softmax(alpha, index, ptr, size_i)
 
         self._alpha = alpha  # Save for later use.
+        self.alpha = alpha
         # print(self._alpha)
         # return x_j * alpha.unsqueeze(-1)
 
@@ -212,21 +213,18 @@ class GATConv(gnn.conv.GATConv):
 
         elif "Nsampling" in self.struct_dropout_mode[0]:
             # multicategorical-sum only
-            self.prior = uniform_prior(edge_attr)
-            if self.val_use_mean is False or self.training:
-                temperature = self.struct_dropout_mode[2]
-                sample_neighbor_size = self.struct_dropout_mode[3]
+            self.prior = uniform_prior(index)
+            temperature = self.struct_dropout_mode[2]
+            sample_neighbor_size = self.struct_dropout_mode[3]
 
-                alphas = []
-                for _ in range(
-                    sample_neighbor_size
-                ):  #! this can be improved by parallel sampling
-                    alphas.append(scatter_sample(alpha, edge_attr, temperature, size_i))
-                alphas = torch.stack(alphas, dim=0)
-                alpha = alphas.sum(dim=0)
+            alphas = []
+            for _ in range(
+                sample_neighbor_size
+            ):  #! this can be improved by parallel sampling
+                alphas.append(scatter_sample(alpha, index, temperature, size_i))
+            alphas = torch.stack(alphas, dim=0)
+            alpha = alphas.sum(dim=0)
 
-            else:
-                raise
         else:
             pass
 
