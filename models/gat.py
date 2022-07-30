@@ -1,11 +1,72 @@
 import math
+
 import torch
 import torch.nn as nn
 import torch_geometric.nn as gnn
 from torch.distributions.normal import Normal
-from torch.nn import Parameter
 from torch.nn import functional as F
-from torch_geometric.nn.dense.linear import Linear
+from torch_geometric.utils import softmax
+from torch_geometric.utils import degree
+
+from typing import Optional
+
+import torch
+from torch import Tensor
+from torch_scatter import gather_csr, scatter, segment_csr
+
+
+def maybe_num_nodes(edge_index, num_nodes=None):
+    if num_nodes is not None:
+        return num_nodes
+    elif isinstance(edge_index, Tensor):
+        return int(edge_index.max()) + 1 if edge_index.numel() > 0 else 0
+    else:
+        return max(edge_index.size(0), edge_index.size(1))
+
+
+def softmax(
+    src: Tensor,
+    index: Optional[Tensor] = None,
+    ptr: Optional[Tensor] = None,
+    num_nodes: Optional[int] = None,
+    dim: int = 0,
+) -> Tensor:
+    r"""Computes a sparsely evaluated softmax.
+    Given a value tensor :attr:`src`, this function first groups the values
+    along the first dimension based on the indices specified in :attr:`index`,
+    and then proceeds to compute the softmax individually for each group.
+
+    Args:
+        src (Tensor): The source tensor.
+        index (LongTensor, optional): The indices of elements for applying the
+            softmax. (default: :obj:`None`)
+        ptr (LongTensor, optional): If given, computes the softmax based on
+            sorted inputs in CSR representation. (default: :obj:`None`)
+        num_nodes (int, optional): The number of nodes, *i.e.*
+            :obj:`max_val + 1` of :attr:`index`. (default: :obj:`None`)
+        dim (int, optional): The dimension in which to normalize.
+            (default: :obj:`0`)
+
+    :rtype: :class:`Tensor`
+    """
+    if ptr is not None:
+        dim = dim + src.dim() if dim < 0 else dim
+        size = ([1] * dim) + [-1]
+        ptr = ptr.view(size)
+        src_max = gather_csr(segment_csr(src, ptr, reduce="max"), ptr)
+        out = (src - src_max).exp()
+        out_sum = gather_csr(segment_csr(out, ptr, reduce="sum"), ptr)
+    elif index is not None:
+        N = maybe_num_nodes(index, num_nodes)
+        src_max = scatter(src, index, dim, dim_size=N, reduce="max")
+        src_max = src_max.index_select(dim, index)
+        out = (src - src_max).exp()
+        out_sum = scatter(out, index, dim, dim_size=N, reduce="sum")
+        out_sum = out_sum.index_select(dim, index)
+    else:
+        raise NotImplementedError
+
+    return out / (out_sum + 1e-16)
 
 
 class GATConv(gnn.conv.GATConv):
@@ -16,7 +77,7 @@ class GATConv(gnn.conv.GATConv):
         heads=1,
         concat=True,
         negative_slope=0.2,
-        reparam_mode=None,
+        reparametrize_mode=None,
         prior_mode=None,
         struct_dropout_mode=None,
         sample_size=1,
@@ -32,7 +93,7 @@ class GATConv(gnn.conv.GATConv):
             heads (int, optional): number of attention heads. Defaults to 1.
             concat (bool, optional): concatenate heads and output channels. Defaults to True.
             negative_slope (float, optional): Defaults to 0.2.
-            reparam_mode (string, optional): reparametrization mode for latent space. Defaults to None == diagonal.
+            reparametrize_mode (string, optional): reparametrization mode for latent space. Defaults to None == diagonal.
             prior_mode (string, optional): feature prior. Defaults to None.
             struct_dropout_mode (List[string], optional): structural dropout: first item should be sampling mode and second distribution. Defaults to None.
             sample_size (int, optional): sample size of latent space. Defaults to 1.
@@ -49,28 +110,15 @@ class GATConv(gnn.conv.GATConv):
         self.concat = concat
         self.negative_slope = negative_slope
 
-        self.reparam_mode = reparam_mode if reparam_mode != "None" else "diag"
+        self.reparametrize_mode = (
+            reparametrize_mode if reparametrize_mode != "None" else "diag"
+        )
         self.prior_mode = prior_mode
         # self.out_neurons = get_reparam_num_neurons(out_channels, self.reparam_mode)
         self.struct_dropout_mode = struct_dropout_mode
         self.sample_size = sample_size
         self.val_use_mean = val_use_mean
-
-        self.__alpha__ = None
-
-        # self.lin = Linear(in_channels, heads * out_channels, bias=False)
-
-        # self.att_i = Parameter(torch.Tensor(1, heads, out_channels))
-        # self.att_j = Parameter(torch.Tensor(1, heads, out_channels))
-
-        # if bias and concat:
-        #     self.bias = Parameter(torch.Tensor(heads * out_channels))
-        # elif bias and not concat:
-        #     self.bias = Parameter(torch.Tensor(out_channels))
-        # else:
-        #     self.register_parameter("bias", None)
-
-        # self.reset_parameters()
+        self._alpha = None
 
     def reparameterize(self, encoder_out, size=None):
         # mode = diag
@@ -84,82 +132,132 @@ class GATConv(gnn.conv.GATConv):
         dist = Normal(mean, std)
         return dist, (mean, std)
 
-    def forward(self, x, edge_index, size=None):
+    def forward(self, x, edge_index, size=None, **kwargs):
         out = super().forward(x, edge_index)
-
+        # print(self._alpha)
         # Reparameterize:
-        # out = out.view(-1, self.out_neurons)
-        self.dist, _ = self.reparameterize(
-            encoder_out=out,
-            size=self.out_channels,
+        out = out.view(-1, self.out_channels)
+        dist, _ = self.reparameterize(
+            encoder_out=out, size=self.out_channels
         )  # dist: [B * head, Z]
-        Z_core = Z = self.dist.rsample((self.sample_size,))  # [S, B * head, Z]
-        Z = Z_core.view(
-            self.sample_size, -1, self.heads * self.out_channels
-        )  # [S, B, head * Z]
 
-        if self.prior_mode == "Gaussian":
-            self.feature_prior = Normal(
-                loc=torch.zeros(out.size(0), self.out_channels).to(x.device),
-                scale=torch.ones(out.size(0), self.out_channels).to(x.device),
-            )  # feature_prior: [B * head, Z]
+        Z_core = Z = dist.rsample((self.sample_size,))  # [B * head, Z]
+        # Z = Z_core.view(self.sample_size, -1, self.out_channels)  # [S, B, head * Z]
+        Z = Z_core
+        # if self.prior_mode == "Gaussian":
 
-        if self.reparam_mode == "diag" and self.prior_mode == "Gaussian":
-            ixz = (
-                torch.distributions.kl.kl_divergence(self.dist, self.feature_prior)
-                .sum(-1)
-                .view(-1, self.heads)
-                .mean(-1)
-            )
-        else:
-            Z_logit = (
-                self.dist.log_prob(Z_core).sum(-1)
-                if self.reparam_mode.startswith("diag")
-                else self.dist.log_prob(Z_core)
-            )  # [S, B * head]
-            prior_logit = self.feature_prior.log_prob(Z_core).sum(-1)  # [S, B * head]
-            # upper bound of I(X; Z):
-            ixz = (Z_logit - prior_logit).mean(0).view(-1, self.heads).mean(-1)  # [B]
+        self.feature_prior = Normal(
+            loc=torch.zeros(Z.shape).to(x.device),
+            scale=torch.ones(Z.shape).to(x.device),
+        )  # [B, Z]
+
+        # if self.reparametrize_mode == "diag" and self.prior_mode == "Gaussian":
+        # ixz = (
+        #     torch.distributions.kl.kl_divergence(dist, self.feature_prior)
+        #     .sum(-1)
+        #     .view(-1, self.heads)
+        #     .mean(-1)
+        # )
+        # else:
+        Z_logit = (
+            dist.log_prob(Z_core).sum(-1)
+            # dist.log_prob(Z_core)
+        )  # [S, B * head]
+        prior_logit = self.feature_prior.log_prob(Z_core).sum(-1)  # [S, B * head]
+        # upper bound of I(X; Z):
+        ixz = (Z_logit - prior_logit).mean(0).view(-1, self.heads)
 
         self.Z_std = Z.std((0, 1))
         self.Z_std = self.Z_std.cpu().data.mean()
-        if self.val_use_mean is False or self.training:
-            out = Z.mean(0)
-        else:
-            out = (
-                out[:, : self.out_channels]
-                .contiguous()
-                .view(-1, self.heads * self.out_channels)
-            )
+
+        out = (
+            out[:, : self.out_channels]
+            .contiguous()
+            .view(-1, self.heads * self.out_channels)
+        )
 
         if "Nsampling" in self.struct_dropout_mode[0]:
-            if "categorical" in self.struct_dropout_mode[1]:
-                structure_kl_loss = torch.sum(
-                    self.alpha * torch.log((self.alpha + 1e-16) / self.prior)
-                )
-            elif "Bernoulli" in self.struct_dropout_mode[1]:
-                posterior = torch.distributions.bernoulli.Bernoulli(self.alpha)
-                prior = torch.distributions.bernoulli.Bernoulli(self.prior)
-                structure_kl_loss = (
-                    torch.distributions.kl.kl_divergence(posterior, prior)
-                    .sum(-1)
-                    .mean()
-                )
-            else:
-                raise Exception(
-                    "I think this belongs to the diff subset sampling that is not implemented"
-                )
-
+            structure_kl_loss = torch.sum(
+                self._alpha * torch.log((self._alpha + 1e-16) / self.prior)
+            )
+        else:
+            structure_kl_loss = torch.zeros([]).to(x.device)
         return out, ixz, structure_kl_loss
 
-    def message(self, edge_index_i, x_i, x_j, size_i):
-        # TODO
-        ...
+    def message(self, x_j, alpha_j, alpha_i, edge_attr, index, ptr, size_i):
+        # Given edge-level attention coefficients for source and target nodes,
+        # we simply need to sum them up to "emulate" concatenation:
+        alpha = alpha_j if alpha_i is None else alpha_j + alpha_i
+        if edge_attr is not None:
+            if edge_attr.dim() == 1:
+                edge_attr = edge_attr.view(-1, 1)
+            assert self.lin_edge is not None
+            edge_attr = self.lin_edge(edge_attr)
+            edge_attr = edge_attr.view(-1, self.heads, self.out_channels)
+            alpha_edge = (edge_attr * self.att_edge).sum(dim=-1)
+            alpha = alpha + alpha_edge
+
+        alpha = F.leaky_relu(alpha, self.negative_slope)
+        alpha = softmax(alpha, index, ptr, size_i)
+
+        self._alpha = alpha  # Save for later use.
+        # print(self._alpha)
+        # return x_j * alpha.unsqueeze(-1)
+
+        # Sample attention coefficients stochastically.
+        # print(index)
+
+        if self.struct_dropout_mode[0] == "standard":
+            prob_dropout = self.struct_dropout_mode[1]
+            alpha = F.dropout(alpha, p=prob_dropout, training=self.training)
+
+        elif "Nsampling" in self.struct_dropout_mode[0]:
+            # multicategorical-sum only
+            self.prior = uniform_prior(edge_attr)
+            if self.val_use_mean is False or self.training:
+                temperature = self.struct_dropout_mode[2]
+                sample_neighbor_size = self.struct_dropout_mode[3]
+
+                alphas = []
+                for _ in range(
+                    sample_neighbor_size
+                ):  #! this can be improved by parallel sampling
+                    alphas.append(scatter_sample(alpha, edge_attr, temperature, size_i))
+                alphas = torch.stack(alphas, dim=0)
+                alpha = alphas.sum(dim=0)
+
+            else:
+                raise
+        else:
+            pass
+
+        # return x_j * alpha.view(-1, self.heads, 1)
+        return x_j * alpha.unsqueeze(-1)
 
     def __repr__(self):
         return "{}({}, {}, heads={})".format(
             self.__class__.__name__, self.in_channels, self.out_channels, self.heads
         )
+
+
+def scatter_sample(src, index, temperature, num_nodes=None):
+    gumbel = (
+        torch.distributions.Gumbel(
+            torch.tensor([0.0]).to(src.device), torch.tensor([1.0]).to(src.device)
+        )
+        .sample(src.size())
+        .squeeze(-1)
+    )
+    log_prob = torch.log(src + 1e-16)
+    logit = (log_prob + gumbel) / temperature
+    # print(logit, index, num_nodes)
+    return softmax(logit, index=index, num_nodes=num_nodes)
+
+
+def uniform_prior(index):
+    deg = degree(index)
+    deg = deg[index]
+    return 1.0 / deg.unsqueeze(1)
 
 
 class GIBGAT(nn.Module):
@@ -168,7 +266,7 @@ class GIBGAT(nn.Module):
         num_features,
         num_classes,
         latent_size,
-        reparam_mode=None,
+        reparam_mode="diag",
         prior_mode=None,
         sample_size=1,
         struct_dropout_mode=("standard", 0.6),
@@ -195,16 +293,16 @@ class GIBGAT(nn.Module):
         self.reparam_layers = []
 
         # Under the default setting, latent_size = 8
-        latent_size = int(self.latent_size / 2)
+        # latent_size = int(self.latent_size / 2)
         if self.reparam_all_layers is True:
             is_reparam = True
 
         self.conv1 = GATConv(
             self.num_features,
-            latent_size,
-            heads=8,
+            self.latent_size,
+            heads=1,
             concat=True,
-            reparam_mode=self.reparam_mode,
+            reparametrize_mode=self.reparam_mode,
             prior_mode=self.prior_mode,
             val_use_mean=self.val_use_mean,
             struct_dropout_mode=self.struct_dropout_mode,
@@ -218,11 +316,11 @@ class GIBGAT(nn.Module):
         else:
             input_size = latent_size * 8
         self.conv2 = GATConv(
-            input_size,
+            latent_size,
             self.num_classes,
             heads=1,
             concat=True,
-            reparam_mode=self.reparam_mode,
+            reparametrize_mode=self.reparam_mode,
             prior_mode=self.prior_mode,
             val_use_mean=self.val_use_mean,
             struct_dropout_mode=self.struct_dropout_mode,
@@ -245,7 +343,7 @@ class GIBGAT(nn.Module):
     def forward(self, data):
         out_dict = {"latent_out": [], "ixz_list": [], "structure_kl_list": []}
 
-        x = F.dropout(data.x, p=0.6, training=self.training)
+        x = F.dropout(data.x, p=0.4, training=self.training)
 
         # another sublayer?
         # if self.struct_dropout_mode[0] == 'DNsampling' or (self.struct_dropout_mode[0] == 'standard' and len(self.struct_dropout_mode) == 3):

@@ -11,6 +11,8 @@ import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 
+import wandb
+
 AVAIL_GPUS = min(1, torch.cuda.device_count())
 BATCH_SIZE = 256 if AVAIL_GPUS else 64
 
@@ -45,75 +47,146 @@ class NodeLevelGNN(pl.LightningModule):
         self.config = config
         self.save_hyperparameters()
 
-    def forward(self, data):
-        out, out_dict = self.model(data)
-        return out, out_dict
+    def forward(self, data, mode="train"):
+        logits, out_dict = self.model(data)
+        # Only calculate the loss on the nodes corresponding to the mask
+        if mode == "train":
+            mask = data.train_mask
+        elif mode == "val":
+            mask = data.val_mask
+        elif mode == "test":
+            mask = data.test_mask
+        else:
+            assert False, "Unknown forward mode: %s" % mode
+
+        loss, acc = self.loss_acc(logits, data, mask)
+        return logits, out_dict, loss, acc
 
     def cross_entropy_loss(self, logits, labels):
-        return F.cross_entropy(logits, labels, reduction="mean")
+        return F.cross_entropy(logits, labels, reduction="none")
 
     def sigmoid_loss(self, logits, labels):
-        return F.sigmoid(logits, labels, reduction="mean")
+        return F.sigmoid(logits, labels, reduction="none")
 
     def loss_acc(self, logits, data, mask):
         loss = self.loss(logits[mask], data.y[mask])
         acc = (logits[mask].argmax(dim=-1) == data.y[mask]).sum().float() / mask.sum()
         return loss, acc
 
-    def logger(self, loss, acc, ixz, iyz, structure_kl_loss, mode):
+    def logger_fun(self, loss, acc, ixz, iyz, structure_kl_loss, mode):
         self.log(f"{mode}_loss", loss)
         self.log(f"{mode}_acc", acc)
-        self.log(f"{mode}_ixz", ixz)
-        self.log(f"{mode}_iyz", iyz)
-        self.log(f"{mode}_structure_kl_loss", structure_kl_loss)
+        self.log(f"{mode}_ixz", ixz.mean())
+        self.log(f"{mode}_iyz", iyz.mean())
+        self.log(f"{mode}_structure_kl_loss", structure_kl_loss.mean())
+
+        root_dir = "../saved_models"
+        base_path = f"{root_dir}/NodeLevel_{self.config.exp_name}"
+        for idx, tensor in enumerate(ixz):
+            torch.save(tensor, f"{base_path}/{mode}_ixz_conv{idx}.pt")
+
+        torch.save(iyz.view(-1, 1), f"{base_path}/{mode}_iyz.pt")
+
+        for idx, tensor in enumerate(structure_kl_loss):
+            torch.save(tensor, f"{base_path}/{mode}_structure_kl_loss_conv{idx}.pt")
+
+        self.logger.experiment.log(
+            {
+                # f"{mode}_ixz_conv1": wandb.Table(
+                #     data=ixz[0].tolist(), columns=["D1", "D2", "D3", "D4"]
+                # ),
+                # f"{mode}_ixz_conv2": wandb.Table(
+                #     data=ixz[1].tolist(), columns=["D1", "D2", "D3", "D4"]
+                # ),
+                # f"{mode}_iyz": wandb.Table(
+                #     data=iyz.view(-1, 1).tolist(), columns=["D1"]
+                # ),
+                # f"{mode}_structure_kl_loss_conv1": wandb.Table(
+                #     data=structure_kl_loss[0].tolist(), columns=["D1", "D2", "D3", "D4"]
+                # ),
+                # f"{mode}_structure_kl_loss_conv2": wandb.Table(
+                #     data=structure_kl_loss[1].tolist(), columns=["D1", "D2", "D3", "D4"]
+                # ),
+            },
+            # commit=False,
+        )
 
     def training_step(self, batch, batch_idx):
         data = batch
-        logits, out_dict = self.forward(data)
+        out, out_dict, loss, acc = self.forward(data, mode="train")
 
-        ixz, structure_kl_loss = out_dict["ixz_list"], out_dict["structure_kl_list"]
-        ixz = torch.stack(ixz).mean(0).sum()
-        structure_kl_loss = torch.stack(structure_kl_loss).mean()
-
-        # Only calculate the loss on the nodes corresponding to the mask
-        loss, acc = self.loss_acc(logits, data, data.train_mask)
+        ixz = torch.stack(out_dict["ixz_list"])[:, data.train_mask, ...]
+        structure_kl_loss = torch.stack(out_dict["structure_kl_list"])[
+            :, data.train_mask, ...
+        ]
         iyz = loss
 
         # IB Loss
-        is_dnsampling = self.model.struct_dropout_mode[0] == "DNsampling"
-        is_dropoutstandard = (
-            self.model.struct_dropout_mode[0] == "standard"
-            and len(self.model.struct_dropout_mode) == 3
-        )
+        ixz_mean = ixz.mean()
+        structure_kl_loss_mean = structure_kl_loss.mean()
+        ib_loss = loss.mean()
+
         if self.config.beta1 is not None and self.config.beta1 != 0:
-            if is_dnsampling or is_dropoutstandard:
-                ...  # ixz = ixz + torch.stack(reg_info["ixz_DN_list"], 1).mean(0).sum()
-            loss = loss + ixz * self.config.beta1
+            ib_loss += ixz_mean * self.config.beta1
 
         if self.config.beta2 is not None and self.config.beta2 != 0:
+            ib_loss += structure_kl_loss_mean * self.config.beta2
 
-            if is_dnsampling or is_dropoutstandard:
-                ...  # structure_kl_loss = structure_kl_loss + torch.stack(reg_info["structure_kl_DN_list"]).mean()
-            loss = loss + structure_kl_loss * self.config.beta2
-
-        self.logger(loss, acc, ixz, iyz, structure_kl_loss, mode="train")
-
-        out = {"loss": loss, "acc": acc}
+        self.logger_fun(ib_loss, acc, ixz, iyz, structure_kl_loss, mode="train")
+        out = {
+            "loss": ib_loss,
+            "acc": acc,
+        }
         return out
 
     def validation_step(self, batch, batch_idx):
         data = batch
-        logits, out_dict = self.forward(data)
+        out, out_dict, loss, acc = self.forward(data, mode="val")
 
-        ixz, structure_kl_loss = out_dict["ixz_list"], out_dict["structure_kl_list"]
-        ixz = torch.stack(ixz).mean(0).sum()
-        structure_kl_loss = torch.stack(structure_kl_loss).mean()
-
-        # Only calculate the loss on the nodes corresponding to the mask
-        loss, acc = self.loss_acc(logits, data, data.val_mask)
+        ixz = torch.stack(out_dict["ixz_list"])[:, data.train_mask, ...]
+        structure_kl_loss = torch.stack(out_dict["structure_kl_list"])[
+            :, data.val_mask, ...
+        ]
         iyz = loss
-        self.logger(loss, acc, ixz, iyz, structure_kl_loss, mode="val")
-        out = {"val_loss": loss, "acc": acc}
+
+        # IB Loss
+        ixz_mean = ixz.mean()
+        structure_kl_loss_mean = structure_kl_loss.mean()
+        ib_loss = loss.mean()
+
+        if self.config.beta1 is not None and self.config.beta1 != 0:
+            ib_loss += ixz_mean * self.config.beta1
+
+        if self.config.beta2 is not None and self.config.beta2 != 0:
+            ib_loss += structure_kl_loss_mean * self.config.beta2
+
+        self.logger_fun(ib_loss, acc, ixz, iyz, structure_kl_loss, mode="val")
+        out = {"val_loss": ib_loss, "val_acc": acc}
+        return out
+
+    def test_step(self, batch, batch_idx):
+        data = batch
+        out, out_dict, loss, acc = self.forward(data, mode="test")
+
+        ixz = torch.stack(out_dict["ixz_list"])[:, data.train_mask, ...]
+        structure_kl_loss = torch.stack(out_dict["structure_kl_list"])[
+            :, data.test_mask, ...
+        ]
+        iyz = loss
+
+        # IB Loss
+        ixz_mean = ixz.mean()
+        structure_kl_loss_mean = structure_kl_loss.mean()
+        ib_loss = loss.mean()
+
+        if self.config.beta1 is not None and self.config.beta1 != 0:
+            ib_loss += ixz_mean * self.config.beta1
+
+        if self.config.beta2 is not None and self.config.beta2 != 0:
+            ib_loss += structure_kl_loss_mean * self.config.beta2
+
+        self.logger_fun(ib_loss, acc, ixz, iyz, structure_kl_loss, mode="test")
+        out = {"test_loss": ib_loss, "test_acc": acc}
         return out
 
     def configure_optimizers(self):
@@ -128,20 +201,21 @@ def train_node_level(config, dataset, **model_kwargs):
     node_data_loader = DataLoader(dataset, batch_size=1, num_workers=12)
 
     # Create a PyTorch Lightning trainer
-    root_dir = os.path.join(config.CHECKPOINT_PATH, "NodeLevel_" + config.model_name)
+    root_dir = os.path.join(config.CHECKPOINT_PATH, "NodeLevel_" + config.exp_name)
     os.makedirs(root_dir, exist_ok=True)
     wandb_logger = WandbLogger(project="gib", name=config.exp_name)
     trainer = pl.Trainer(
         logger=wandb_logger,
         default_root_dir=root_dir,
         callbacks=[
-            # EarlyStopping(monitor="val_loss", mode="min", min_delta=1e-2),
+            EarlyStopping(monitor="val_loss", mode="min", min_delta=1e-2),
             ModelCheckpoint(save_weights_only=True, mode="max", monitor="val_acc"),
         ],
         gpus=AVAIL_GPUS,
-        max_epochs=100,  # GIB GCN acc plateaus at 67 epochs
+        max_epochs=100,  # GIB GCN acc plateaus at 70~ epochs, GAT at 20~
         progress_bar_refresh_rate=1,
     )  # 0 because epoch size is 1
+
     trainer.logger._default_hp_metric = (
         None  # Optional logging argument that we don't need
     )
@@ -165,13 +239,17 @@ def train_node_level(config, dataset, **model_kwargs):
         )
 
     # Test best model on the test set
-    test_result = trainer.test(
-        config.model, dataloaders=node_data_loader, verbose=False
-    )
+    test_result = trainer.test(pl_model, dataloaders=node_data_loader, verbose=False)
     batch = next(iter(node_data_loader))
-    batch = batch.to(pl_model.config.device)
-    _, train_acc = pl_model.forward(batch, mode="train")
-    _, val_acc = pl_model.forward(batch, mode="val")
+    batch = batch.to(pl_model.device)
+    _, _, train_loss, train_acc = pl_model.forward(
+        batch,
+        mode="train",
+    )
+    _, _, val_loss, val_acc = pl_model.forward(
+        batch,
+        mode="val",
+    )
     result = {"train": train_acc, "val": val_acc, "test": test_result[0]["test_acc"]}
     return pl_model, result
 
