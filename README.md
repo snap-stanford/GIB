@@ -9,7 +9,7 @@ At the moment we have implemented the following:
 * training: no adversarial attack.
 * experiments: only CORA dataset, visualization of node embeddings, includes multiple baselines. 
 
-We have purposely left out the everything related to adversial attacks.
+We have purposely left out everything related to adversial attacks.
 
 A cleaning is due.
 
