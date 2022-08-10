@@ -3,10 +3,10 @@ import numpy as np
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
 import torch_geometric.nn as gnn
 from torch.distributions.normal import Normal
-from torch.nn import Parameter
-from torch.nn import functional as F
 
 
 class GCNConv(gnn.conv.GCNConv):
@@ -57,10 +57,10 @@ class GCNConv(gnn.conv.GCNConv):
         self.sample_size = sample_size
         self.val_use_mean = False
 
-        self.weight = Parameter(torch.Tensor(in_channels, out_channels))
+        self.weight = nn.Parameter(torch.Tensor(in_channels, out_channels))
 
         if bias:
-            self.bias = Parameter(torch.Tensor(out_channels))
+            self.bias = nn.Parameter(torch.Tensor(out_channels))
         else:
             self.register_parameter("bias", None)
 
@@ -82,8 +82,8 @@ class GCNConv(gnn.conv.GCNConv):
         dist = Normal(mean, std)
         return dist, (mean, std)
 
-    def forward(self, x, edge_index, edge_weight=None):
-        out = super().forward(x, edge_index, edge_weight)
+    def forward(self, x, edge_index, edge_attr=None, size=None, **kwargs):
+        out = super().forward(x, edge_index, edge_weight=edge_attr)
         # Reparameterize:
         self.dist, _ = self.reparameterize(
             encoder_out=out, size=self.out_channels
@@ -189,12 +189,12 @@ class GIBGCN(nn.Module):
     def forward(self, data, save_latent=False):
         out_dict = {"latent_out": [], "ixz_list": [], "structure_kl_list": []}
 
-        x, edge_index, edge_weight = data.x, data.edge_index, data.edge_attr
+        x, edge_index, edge_attr = data.x.float(), data.edge_index, data.edge_attr
 
         # if self.use_relu? x = F.relu(x)
         # if self.dropout: x = F.dropout(x, training=self.training)
 
-        x, ixz, structure_kl_loss = self.conv1(x, edge_index, edge_weight)
+        x, ixz, structure_kl_loss = self.conv1(x, edge_index, edge_attr)
         out_dict["latent_out"] = out_dict["latent_out"] + [x]
         out_dict["ixz_list"] = out_dict["ixz_list"] + [ixz]
         out_dict["structure_kl_list"] = out_dict["structure_kl_list"] + [
@@ -202,7 +202,7 @@ class GIBGCN(nn.Module):
         ]
         # save latent ==> torch.save(z)?
 
-        x, ixz, structure_kl_loss = self.conv2(x, edge_index, edge_weight)
+        x, ixz, structure_kl_loss = self.conv2(x, edge_index, edge_attr)
         out_dict["latent_out"] = out_dict["latent_out"] + [x]
         out_dict["ixz_list"] = out_dict["ixz_list"] + [ixz]
         out_dict["structure_kl_list"] = out_dict["structure_kl_list"] + [

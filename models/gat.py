@@ -1,36 +1,38 @@
+from typing import Optional
 import math
 
 import torch
 import torch.nn as nn
-import torch_geometric.nn as gnn
+import torch.nn.functional as F
 from torch.distributions.normal import Normal
-from torch.nn import functional as F
-from torch_geometric.utils import softmax
+
+import torch_geometric.nn as gnn
 from torch_geometric.utils import degree
-
-from typing import Optional
-
-import torch
-from torch import Tensor
 from torch_scatter import gather_csr, scatter, segment_csr
 
 
 def maybe_num_nodes(edge_index, num_nodes=None):
     if num_nodes is not None:
         return num_nodes
-    elif isinstance(edge_index, Tensor):
+    elif isinstance(edge_index, torch.Tensor):
         return int(edge_index.max()) + 1 if edge_index.numel() > 0 else 0
     else:
         return max(edge_index.size(0), edge_index.size(1))
 
 
+def uniform_prior(index):
+    deg = degree(index)
+    deg = deg[index]
+    return 1.0 / deg.unsqueeze(1)
+
+
 def softmax(
-    src: Tensor,
-    index: Optional[Tensor] = None,
-    ptr: Optional[Tensor] = None,
+    src: torch.Tensor,
+    index: Optional[torch.Tensor] = None,
+    ptr: Optional[torch.Tensor] = None,
     num_nodes: Optional[int] = None,
     dim: int = 0,
-) -> Tensor:
+) -> torch.Tensor:
     r"""Computes a sparsely evaluated softmax.
     Given a value tensor :attr:`src`, this function first groups the values
     along the first dimension based on the indices specified in :attr:`index`,
@@ -83,7 +85,7 @@ class GATConv(gnn.conv.GATConv):
         sample_size=1,
         val_use_mean=True,
         bias=True,
-        **kwargs
+        **kwargs,
     ):
         """Graph Attention Convolution layer with GIB principle
 
@@ -132,9 +134,9 @@ class GATConv(gnn.conv.GATConv):
         dist = Normal(mean, std)
         return dist, (mean, std)
 
-    def forward(self, x, edge_index, size=None, **kwargs):
-        out = super().forward(x, edge_index)
-        # print(self._alpha)
+    def forward(self, x, edge_index, edge_attr=None, size=None, **kwargs):
+        out = super().forward(x, edge_index, edge_attr=edge_attr, size=size)
+
         # Reparameterize:
         out = out.view(-1, self.out_channels)
         dist, _ = self.reparameterize(
@@ -142,28 +144,15 @@ class GATConv(gnn.conv.GATConv):
         )  # dist: [B * head, Z]
 
         Z_core = Z = dist.rsample((self.sample_size,))  # [B * head, Z]
-        # Z = Z_core.view(self.sample_size, -1, self.out_channels)  # [S, B, head * Z]
         Z = Z_core
-        # if self.prior_mode == "Gaussian":
-
         self.feature_prior = Normal(
             loc=torch.zeros(Z.shape).to(x.device),
             scale=torch.ones(Z.shape).to(x.device),
         )  # [B, Z]
 
-        # if self.reparametrize_mode == "diag" and self.prior_mode == "Gaussian":
         ixz = torch.distributions.kl.kl_divergence(dist, self.feature_prior).view(
             x.shape[0], -1, self.heads
         )
-        # else:
-        # Z_logit = (
-        #     dist.log_prob(Z_core).sum(-1)
-        #     # dist.log_prob(Z_core)
-        # )  # [S, B * head]
-        # prior_logit = self.feature_prior.log_prob(Z_core).sum(-1)  # [S, B * head]
-        # # upper bound of I(X; Z):
-        # ixz = (Z_logit - prior_logit).view(x.shape[0], -1, self.heads)
-
         self.Z_std = Z.std((0, 1))
         self.Z_std = self.Z_std.cpu().data.mean()
 
@@ -180,7 +169,6 @@ class GATConv(gnn.conv.GATConv):
 
         else:
             structure_kl_loss = torch.zeros(ixz.shape).to(x.device)
-        # print(out.shape, ixz.shape, structure_kl_loss.shape)
         return out, ixz, structure_kl_loss
 
     def message(self, x_j, alpha_j, alpha_i, edge_attr, index, ptr, size_i):
@@ -201,12 +189,8 @@ class GATConv(gnn.conv.GATConv):
 
         self._alpha = alpha  # Save for later use.
         self.alpha = alpha
-        # print(self._alpha)
-        # return x_j * alpha.unsqueeze(-1)
 
         # Sample attention coefficients stochastically.
-        # print(index)
-
         if self.struct_dropout_mode[0] == "standard":
             prob_dropout = self.struct_dropout_mode[1]
             alpha = F.dropout(alpha, p=prob_dropout, training=self.training)
@@ -224,12 +208,10 @@ class GATConv(gnn.conv.GATConv):
                 alphas.append(scatter_sample(alpha, index, temperature, size_i))
             alphas = torch.stack(alphas, dim=0)
             alpha = alphas.sum(dim=0)
-
         else:
             pass
 
-        # return x_j * alpha.view(-1, self.heads, 1)
-        return x_j * alpha.unsqueeze(-1)
+        return x_j * alpha.view(-1, self.heads, 1)
 
     def __repr__(self):
         return "{}({}, {}, heads={})".format(
@@ -247,14 +229,7 @@ def scatter_sample(src, index, temperature, num_nodes=None):
     )
     log_prob = torch.log(src + 1e-16)
     logit = (log_prob + gumbel) / temperature
-    # print(logit, index, num_nodes)
     return softmax(logit, index=index, num_nodes=num_nodes)
-
-
-def uniform_prior(index):
-    deg = degree(index)
-    deg = deg[index]
-    return 1.0 / deg.unsqueeze(1)
 
 
 class GIBGAT(nn.Module):
@@ -272,6 +247,7 @@ class GIBGAT(nn.Module):
         val_use_mean=True,
         reparam_all_layers=True,
         normalize=True,
+        **kwargs,
     ):
         super(GIBGAT, self).__init__()
         self.num_features = num_features
@@ -304,6 +280,7 @@ class GIBGAT(nn.Module):
             val_use_mean=self.val_use_mean,
             struct_dropout_mode=self.struct_dropout_mode,
             sample_size=self.sample_size,
+            **kwargs,
         )
         if self.struct_dropout_mode[0] == "DNsampling" or (
             self.struct_dropout_mode[0] == "standard"
@@ -322,56 +299,34 @@ class GIBGAT(nn.Module):
             val_use_mean=self.val_use_mean,
             struct_dropout_mode=self.struct_dropout_mode,
             sample_size=self.sample_size,
+            **kwargs,
         )
-
-        # another sublayer?
-        # if self.struct_dropout_mode[0] == 'DNsampling' or (self.struct_dropout_mode[0] == 'standard' and len(self.struct_dropout_mode) == 3):
-        #     setattr(self, "conv{}_1".format(i + 1), GATConv(
-        #         input_size,
-        #         latent_size if i != self.num_layers - 1 else self.num_classes,
-        #         heads=8 if i != self.num_layers - 1 else 1, concat=True,
-        #         reparam_mode=self.reparam_mode if is_reparam else None,
-        #         prior_mode=self.prior_mode if is_reparam  else None,
-        #         val_use_mean=self.val_use_mean,
-        #         struct_dropout_mode=self.struct_dropout_mode,
-        #         sample_size=self.sample_size,
-        #     ))
 
     def forward(self, data):
         out_dict = {"latent_out": [], "ixz_list": [], "structure_kl_list": []}
+        x, edge_index, edge_attr = (
+            data.x.float(),
+            data.edge_index,
+            data.edge_attr,
+        )
 
-        x = F.dropout(data.x, p=0.4, training=self.training)
+        x = F.dropout(x, p=0.4, training=self.training)
 
-        # another sublayer?
-        # if self.struct_dropout_mode[0] == 'DNsampling' or (self.struct_dropout_mode[0] == 'standard' and len(self.struct_dropout_mode) == 3):
-        #     x_1, ixz_1, structure_kl_loss_1 = getattr(self, "conv{}_1".format(i + 1))(x, data.multi_edge_index)
-
-        x, ixz, structure_kl_loss = self.conv1(x, data.edge_index)
+        x, ixz, structure_kl_loss = self.conv1(x, edge_index, edge_attr)
         out_dict["latent_out"] = out_dict["latent_out"] + [x]
         out_dict["ixz_list"] = out_dict["ixz_list"] + [ixz]
         out_dict["structure_kl_list"] = out_dict["structure_kl_list"] + [
             structure_kl_loss
         ]
-        # Multi-hop:
-        # if self.struct_dropout_mode[0] == 'DNsampling' or (self.struct_dropout_mode[0] == 'standard' and len(self.struct_dropout_mode) == 3):
-        #     x = torch.cat([x, x_1], dim=-1)
 
         x = F.elu(x)
         x = F.dropout(x, p=0.6, training=self.training)
 
-        # another sublayer?
-        # if self.struct_dropout_mode[0] == 'DNsampling' or (self.struct_dropout_mode[0] == 'standard' and len(self.struct_dropout_mode) == 3):
-        #     x_1, ixz_1, structure_kl_loss_1 = getattr(self, "conv{}_1".format(self.num_layers))(x, data.multi_edge_index)
-
-        x, ixz, structure_kl_loss = self.conv2(x, data.edge_index)
+        x, ixz, structure_kl_loss = self.conv2(x, data.edge_index, edge_attr)
         out_dict["latent_out"] = out_dict["latent_out"] + [x]
         out_dict["ixz_list"] = out_dict["ixz_list"] + [ixz]
         out_dict["structure_kl_list"] = out_dict["structure_kl_list"] + [
             structure_kl_loss
         ]
-
-        # Multi-hop:
-        # if self.struct_dropout_mode[0] == 'DNsampling' or (self.struct_dropout_mode[0] == 'standard' and len(self.struct_dropout_mode) == 3):
-        #     x = x + x_1
 
         return x, out_dict
