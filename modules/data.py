@@ -6,18 +6,16 @@ import numpy as np
 sys.path.append(os.path.join(os.path.dirname("__file__"), ".."))
 from copy import deepcopy
 import torch
-from torch_geometric.datasets import Planetoid
+from torch_geometric.datasets import Planetoid, MoleculeNet
 import pickle
 import torch_geometric.transforms as T
 
 
 def get_data(
     dataset_name,
-    train_fraction=1,
     lcc=False,
     added_edge_fraction=0,
     feature_noise_ratio=0,
-    **kwargs
 ):
     """Get the pytorch-geometric data object.
 
@@ -52,65 +50,32 @@ def get_data(
 
         ds.loss = "softmax"
     else:
-        raise Exception("data_type {} is not valid!".format(dataset_name))
+        raise Exception("dataset_name {} is not valid!".format(dataset_name))
 
     # work with lcc only
     if lcc:
-        ds[0] = T.LargestConnectedComponents()(ds[0])
-
-    # if boolean:
-    #     data.x = data.x.bool().float()
-
-    # Reduce the number of training examples by randomly choosing some of the original training examples:
-    if train_fraction != 1:
-        try:
-            train_mask_file = "../attack_data/{}/train_mask_tr_{}_seed_{}.p".format(
-                dataset_name, train_fraction, kwargs["seed"] % 10
-            )
-            new_train_mask = pickle.load(open(train_mask_file, "rb"))
-            ds[0].train_mask = torch.BoolTensor(new_train_mask).to(ds[0].y.device)
-            print("Load train_mask at {}".format(train_mask_file))
-        except:
-            raise
+        for idx, data in enumerate(ds):
+            ds[idx] = T.LargestConnectedComponents()(data)
 
     # Add random edges for non-targeted attacks:
     if added_edge_fraction > 0:
-        ds[0] = add_random_edge(ds[0], added_edge_fraction=added_edge_fraction)
+        for idx, data in enumerate(ds):
+            ds[idx] = add_random_edge(data, added_edge_fraction=added_edge_fraction)
     elif added_edge_fraction < 0:
-        ds[0] = remove_edge_random(ds[0], remove_edge_fraction=-added_edge_fraction)
+        for idx, data in enumerate(ds):
+            ds[idx] = remove_edge_random(
+                data, remove_edge_fraction=-added_edge_fraction
+            )
 
     # Perturb features for non-targeted attacks:
     if feature_noise_ratio > 0:
-        x_max_mean = ds[0].x.max(1)[0].mean()
-        ds[0].x = (
-            ds[0].x + torch.randn(ds[0].x.shape) * x_max_mean * feature_noise_ratio
-        )
+        for idx, data in enumerate(ds):
+            x_max_mean = data.x.max(1)[0].mean()
+            data.x = (
+                data.x + torch.randn(data.x.shape) * x_max_mean * feature_noise_ratio
+            )
+            ds[idx] = data
 
-    # For adversarial attacks:
-    ds[0].dataset_name = dataset_name
-    if "attacked_nodes" in kwargs:
-        attack_path = os.path.join(
-            os.path.dirname(os.path.realpath("__file__")),
-            "..",
-            "attack_data",
-            dataset_name,
-        )
-        if not os.path.exists(attack_path):
-            os.makedirs(attack_path)
-        try:
-            with open(os.path.join(attack_path, "test-node.pkl"), "rb") as f:
-                node_ids = pickle.load(f)
-                ds[0].node_ids = node_ids
-                print(
-                    "Load previous attacked node_ids saved in {}.".format(attack_path)
-                )
-        except:
-            test_ids = np.array(torch.where(ds[0].test_mask)[0])
-            node_ids = get_list_elements(test_ids, kwargs["attacked_nodes"])
-            with open(os.path.join(attack_path, "test-node.pkl"), "wb") as f:
-                pickle.dump(node_ids, f)
-            info["node_ids"] = node_ids
-            print("Save attacked node_ids into {}.".format(attack_path))
     return ds
 
 
