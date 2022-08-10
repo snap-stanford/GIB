@@ -6,8 +6,12 @@ At the moment we have implemented the following:
 
 * GCN: only diag reparametrization and Gaussian prior.
 * GAT: only diag reparametrization and Gaussian prior.
-* training: no adversarial attack (yet).
+* training: no adversarial attack.
+* experiments: only CORA dataset, visualization of node embeddings, includes multiple baselines. 
 
+We have purposely left out everything related to adversial attacks.
+
+A cleaning is due.
 
 Author:
 Victor Faraggi, @stepp1
