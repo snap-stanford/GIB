@@ -7,7 +7,7 @@ This repository reproduces the results in the paper `Graph Information Bottlenec
 Representation learning on graphs with graph neural networks (GNNs) is a challenging task. Previous work has shown that GNNs are susceptible to adversarial attack. We here introduce Graph Information Bottleneck (GIB), which learns representation that is maximally informative about the target to predict while using minimal sufficient information of the input data. Concretely, the GIB principle regularizes the representation of the node features as well as the graph structure so that it increases the robustness of GNNs. For more information, see our paper `Graph Information Bottleneck <https://arxiv.org/abs/2010.12811>`_ (Wu *et al*. 2020), and our project website at `http://snap.stanford.edu/gib/ <http://snap.stanford.edu/gib/>`_.
 
 .. image:: GIB.png
-  :width: 300
+  :width: 800
   :alt: GIB_principle
 
 
@@ -25,7 +25,7 @@ The repository also has the following dependencies, and please refer to the resp
 
 - `PyTorch <https://pytorch.org/>`_ >= 1.4.0
 
-- `pytorch_geometric <https://github.com/rusty1s/pytorch_geometric>`_  >=1.4.0,<=1.5.1
+- `pytorch_geometric <https://github.com/rusty1s/pytorch_geometric>`_  **>=1.4.0,<=1.5.1**
 
 Additional requirements are in requirements.txt, which can be installed via ``pip install -r requirements.txt``.
 
